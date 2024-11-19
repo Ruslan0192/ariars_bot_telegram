@@ -1,0 +1,8 @@
+
+install
+    aiogram==3.9.0
+    loguru
+    python-dotenv
+    sqlalchemy
+    asyncpg
+    notifiers
