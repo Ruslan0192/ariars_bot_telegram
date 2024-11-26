@@ -3,10 +3,10 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InputMediaPhoto
 
+
 # from loguru import logger
 
 from filters.class_filters import IsAdmin
-from handlers.menu_together_use import def_list_out_one_question_parents
 
 from keyboards.inline_user import MenuCallBack, get_user_answer_from_admin_btns
 from keyboards.inline_admin import get_admin_products_btns
@@ -27,22 +27,32 @@ from handlers.menu_processing_admin import (get_admin_menu_content,
                                             def_choice_product_composition,
                                             def_choice_product_description, def_choice_product_photo,
                                             def_choice_product_link, def_choice_product_end, def_theme_edit_photo,
-                                            def_theme_edit_name
-                                            )
+                                            def_theme_edit_name)
+from handlers.menu_together_use import def_list_out_one_question_parents
+
 admin_router = Router()
 
 
 @admin_router.message(CommandStart(), IsAdmin())
-async def start_cmd(message: types.Message, session: AsyncSession, state: FSMContext):
+async def start_cmd(message: types.Message, session: AsyncSession, state: FSMContext, bot: Bot):
     await message.delete()
+
+    await state.update_data({'telegram_id': message.from_user.id})
+    await state.update_data({'scheduler_job_id': ''})
+    await state.update_data({'get_message': ''})
+    await state.update_data({'edit_message': ''})
+
     result = await orm_get_general(session, 'hello_description')
-    image, reply_markup = await def_main_menu_admin(session, state, level=0)
-    edit_message = await message.answer_photo(photo=result.picture, caption=result.description, reply_markup=reply_markup)
-    await state.update_data({'edit_message': edit_message})
+    image, reply_markup = await def_main_menu_admin(session, bot, state, level=0)
+    edit_message = await message.answer_photo(
+        photo=result.picture, caption=result.description, reply_markup=reply_markup)
+    await state.update_data({'edit_message': edit_message.message_id})
+
 
 
 @admin_router.callback_query(MenuCallBack.filter(), IsAdmin())
-async def admin_menu(callback: types.CallbackQuery, callback_data: MenuCallBack, session: AsyncSession, bot: Bot, state: FSMContext):
+async def admin_menu(
+        callback: types.CallbackQuery, callback_data: MenuCallBack, session: AsyncSession, bot: Bot, state: FSMContext):
     image, reply_markup = await get_admin_menu_content(
             callback.message,
             session,
@@ -52,23 +62,27 @@ async def admin_menu(callback: types.CallbackQuery, callback_data: MenuCallBack,
             menu_name=callback_data.menu_name,
             product_id=callback_data.product_id,
             category=callback_data.category,
-            page=callback_data.page,
-            telegram_id=callback.from_user.id)
+            page=callback_data.page)
 
     if image != None:
-        edit_message = await callback.message.edit_media(media=image, reply_markup=reply_markup, parse_mode='Markdown')
-        await state.update_data({'edit_message': edit_message})
-        await callback.answer()
-    #
-    # if callback_data.level < 21:
-    #     edit_message = await callback.message.edit_media(media=image, reply_markup=reply_markup)
-    #     await state.update_data({'edit_message': edit_message})
-    #     await callback.answer()
+        data_state = await state.get_data()
+        edit_message = data_state['edit_message']
+        await bot.edit_message_media(media=image,
+                                     chat_id=callback.from_user.id,
+                                     message_id=edit_message,
+                                     reply_markup=reply_markup)
 
 
-async def def_refresh_message(data_state, image, reply_markup):
+async def def_refresh_message(bot: Bot, data_state: dict, telegram_id: int, image, reply_markup):
     edit_message = data_state['edit_message']
-    await edit_message.edit_media(media=image, reply_markup=reply_markup)
+    # await edit_message.edit_media(media=image, reply_markup=reply_markup)
+    try:
+        await bot.edit_message_media(media=image,
+                                     chat_id=telegram_id,
+                                     message_id=edit_message,
+                                     reply_markup=reply_markup)
+    except ():
+        pass
 
 
 # ******************************************************************************************************
@@ -80,20 +94,23 @@ async def def_message_foto(message: types.Message, state: FSMContext, session: A
     get_message = data_state['get_message']
     await message.delete()
 
+    telegram_id = message.from_user.id
+
     if get_message == 'default':
         await def_photo_default(message, state, session, picture, data_state)
     elif get_message == 'developer':
-        await def_photo_developer(state, session, picture, data_state)
+        await def_photo_developer(bot, state, session, picture, data_state, telegram_id)
     elif get_message.startswith("editthemephoto_"):
-        await def_photo_change_theme_question(message, state, session, picture, data_state, get_message)
+        await def_photo_change_theme_question(bot, message, state, session, picture, data_state, get_message)
     elif get_message.startswith("general_"):
-        await def_photo_general_(message, state, session, picture, data_state, get_message)
+        await def_photo_general_(bot, message, state, session, picture, data_state, get_message)
     elif get_message == "type_catalog":
-        await def_photo_type_catalog(state, session, picture, data_state)
+        await def_photo_type_catalog(bot, state, session, picture, data_state, telegram_id)
     elif get_message == "product_photo":
-        await def_photo_product(session, state, picture, data_state)
+        await def_photo_product(bot, session, state, picture, data_state, telegram_id)
     # elif get_message == "product_description":
     #     await def_serial_photo_product(state, picture, data_state)
+
 
 async def def_photo_default(message: types.Message, state: FSMContext, session: AsyncSession, picture, data_state):
     # сохраняю картинки по умолчанию
@@ -110,7 +127,8 @@ async def def_photo_default(message: types.Message, state: FSMContext, session: 
     await state.update_data({'edit_message': edit_message})
 
 
-async def def_photo_developer(state: FSMContext, session: AsyncSession, picture, data_state):
+async def def_photo_developer(
+        bot: Bot, state: FSMContext, session: AsyncSession, picture: str, data_state: dict, telegram_id: int):
     # сохраняю картинку для разработчика
     await orm_add_general(session,
                           id_name='for_devoloper',
@@ -120,12 +138,13 @@ async def def_photo_developer(state: FSMContext, session: AsyncSession, picture,
                           picture=picture,
                           )
 
-    image, reply_markup = await def_main_menu_admin(session, state, level=0)
-    await def_refresh_message(data_state, image, reply_markup)
+    image, reply_markup = await def_main_menu_admin(session, bot, state, level=0)
+    await def_refresh_message(bot, data_state, telegram_id, image, reply_markup)
     await state.update_data({'get_message': ''})
 
 
-async def def_photo_change_theme_question(message: types.Message, state: FSMContext, session: AsyncSession, picture, data_state, get_message):
+async def def_photo_change_theme_question(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, picture, data_state, get_message):
     # сохраняю картинку и описание для настроек темы вопросов
     theme_name = get_message.split("_")[-1]
     description = message.caption
@@ -138,10 +157,11 @@ async def def_photo_change_theme_question(message: types.Message, state: FSMCont
     await state.update_data({'get_message': ''})
 
     image, reply_markup = await def_themes(session, state, 11, data_state['page'])
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_photo_general_(message: types.Message, state: FSMContext, session: AsyncSession, picture, data_state, get_message):
+async def def_photo_general_(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, picture, data_state, get_message):
     # сохраняю картинку и описание для настроек
     id_general = int(get_message.split("_")[-1])
     if data_state['description'] != '':
@@ -154,26 +174,28 @@ async def def_photo_general_(message: types.Message, state: FSMContext, session:
 
     await state.update_data({'get_message': ''})
 
-    image, reply_markup = await def_general(session, state,14, data_state['page'])
-    await def_refresh_message(data_state, image, reply_markup)
+    image, reply_markup = await def_general(session, state, 14, data_state['page'])
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_photo_type_catalog(state: FSMContext, session: AsyncSession, picture, data_state):
+async def def_photo_type_catalog(
+        bot: Bot, state: FSMContext, session: AsyncSession, picture: str, data_state: dict, telegram_id: int):
     # сохраняю картинку для категории
     id_cat_type = data_state['id_cat_type']
     await orm_change_prod_cat_photo(session, id_cat_type, picture)
 
     image, reply_markup = await def_products(session, state, 3, id_cat_type, 1)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, telegram_id, image, reply_markup)
 
 
-async def def_photo_product(session: AsyncSession, state: FSMContext, picture: str, data_state: dict):
+async def def_photo_product(
+        bot: Bot, session: AsyncSession, state: FSMContext, picture: str, data_state: dict, telegram_id: int):
     product_pictures = data_state['product_pictures']
     product_pictures.append(picture)
     await state.update_data({'product_pictures': product_pictures})
 
     image, reply_markup = await def_choice_product_photo(session, state, 33, len(product_pictures))
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, telegram_id, image, reply_markup)
 
 
 # ******************************************************************************************************
@@ -188,30 +210,30 @@ async def def_message_text(message: types.Message, state: FSMContext, session: A
         await def_admin_to_user(session, state, bot, message.from_user.id, data_state)
 
     elif get_message == "new_theme":
-        await def_text_new_theme(message, state, session, data_state)
+        await def_text_new_theme(bot, message, state, session, data_state)
     elif get_message.startswith("theme_"):
-        await def_text_edit_theme(message, state, session, data_state, get_message)
+        await def_text_edit_theme(bot, message, state, session, data_state, get_message)
 
     elif get_message == "catalog":
-        await def_text_catalog(message, state, session, data_state)
+        await def_text_catalog(bot, message, state, session, data_state)
     elif get_message == "type_catalog":
-        await def_text_type_catalog(message, state, session, data_state)
+        await def_text_type_catalog(bot, message, state, session, data_state)
     elif get_message == "product_name":
-        await def_text_product(message, state, session, data_state)
+        await def_text_product(bot, message, state, session, data_state)
     elif get_message == "product_price":
-        await def_text_product_price(message, state, session, data_state)
+        await def_text_product_price(bot, message, state, session, data_state)
     elif get_message == "product_color":
-        await def_text_product_color(message, state, session, data_state)
+        await def_text_product_color(bot, message, state, session, data_state)
     elif get_message == "product_size":
-        await def_text_product_size(message, state, session, data_state)
+        await def_text_product_size(bot, message, state, session, data_state)
     elif get_message == "product_gender":
-        await def_text_product_gender(message, state, session, data_state)
+        await def_text_product_gender(bot, message, state, session, data_state)
     elif get_message == "product_composition":
-        await def_text_product_composition(message, state, session, data_state)
+        await def_text_product_composition(bot, message, state, session, data_state)
     elif get_message == "product_description":
-        await def_text_product_description(message, state, data_state)
+        await def_text_product_description(bot, message, state, data_state)
     elif get_message == "product_link":
-        await def_text_product_link(message, state, session, data_state)
+        await def_text_product_link(bot, message, state, session, data_state)
 
     elif get_message.startswith("textanswerquestion_"):
         await def_text_answer_question(message, state, session, bot, data_state, get_message)
@@ -219,14 +241,16 @@ async def def_message_text(message: types.Message, state: FSMContext, session: A
 
 async def def_admin_to_user(session: AsyncSession, state: FSMContext, bot: Bot, telegram_id: int, data_state):
     # переход в режим покупателя
+
     await orm_change_admin_user(session, telegram_id)
     # await load_list_admins(session, bot)  # загрузка из бд адресов админа и владельца
 
-    image, reply_markup = await def_main_menu_user(session, state, bot, telegram_id,0)
-    await def_refresh_message(data_state, image, reply_markup)
+    image, reply_markup = await def_main_menu_user(session, state, bot, 0)
+    await def_refresh_message(bot, data_state, telegram_id, image, reply_markup)
 
 
-async def def_text_new_theme(message: types.Message, state: FSMContext, session: AsyncSession, data_state):
+async def def_text_new_theme(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state):
     # сохраняю новую категорию товара
     theme_name = message.text
     #     проверка на дубликат
@@ -239,13 +263,14 @@ async def def_text_new_theme(message: types.Message, state: FSMContext, session:
 
     result = await orm_get_general(session, 'question')
 
-    caption = (f"Тема: {theme_name}\n\nВставьте фото c описанием темы вопросов")
+    caption = f"Тема: {theme_name}\n\nВставьте фото c описанием темы вопросов"
     image = InputMediaPhoto(media=result.picture, caption=caption)
 
-    await def_refresh_message(data_state, image, None)
+    await def_refresh_message(bot, data_state,  message.from_user.id, image, None)
 
 
-async def def_text_edit_theme(message: types.Message, state: FSMContext, session: AsyncSession, data_state, get_message):
+async def def_text_edit_theme(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state, get_message):
     theme_name_old = get_message.split("_")[-1]
     theme_name = message.text
 
@@ -256,16 +281,17 @@ async def def_text_edit_theme(message: types.Message, state: FSMContext, session
         if theme_name != theme_name_old:
             # не текущее, перезапрашиваю имя
             image, reply_markup = await def_theme_edit_name(session, state, theme_name_old, True)
-            await def_refresh_message(data_state, image, reply_markup)
+            await def_refresh_message(bot, data_state,  message.from_user.id, image, reply_markup)
     else:
         # не было, перезаписываю имя
         await orm_change_name_category_question(session, result.id, theme_name)
 
     image, reply_markup = await def_theme_edit_photo(session, state, theme_name)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state,  message.from_user.id, image, reply_markup)
 
 
-async def def_text_catalog(message: types.Message, state: FSMContext, session: AsyncSession, data_state):
+async def def_text_catalog(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state):
     # сохраняю новую категорию товара
     cat_name = message.text
     #     проверка на дубликат
@@ -275,10 +301,11 @@ async def def_text_catalog(message: types.Message, state: FSMContext, session: A
         await orm_add_prod_cat_type(session=session, cat_name=cat_name, type_name='')
 
     image, reply_markup = await def_type_catalog(session, state, cat_name)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_text_type_catalog(message: types.Message, state: FSMContext, session: AsyncSession, data_state):
+async def def_text_type_catalog(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state):
     # сохраняю новый тип категории товара
     cat_name = data_state['cat_name']
     type_name = message.text
@@ -303,10 +330,11 @@ async def def_text_type_catalog(message: types.Message, state: FSMContext, sessi
     result = await orm_get_general(session, 'catalog')
     image = InputMediaPhoto(media=result.picture, caption=caption)
     reply_markup = get_admin_products_btns(level=2, category=0, menu_name='photo', product_id=0)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_text_product(message: types.Message, state: FSMContext, session: AsyncSession, data_state):
+async def def_text_product(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state):
     # сохраняю новый товар
     product_name = message.text
     await state.update_data({'product_name': product_name})
@@ -324,78 +352,82 @@ async def def_text_product(message: types.Message, state: FSMContext, session: A
         await state.update_data({'product_pictures': []})
 
     image, reply_markup = await def_choice_product_photo(session, state, 33, 1)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_text_product_price(message: types.Message, state: FSMContext, session: AsyncSession, data_state):
+async def def_text_product_price(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state):
     # сохраняю стоимость товара
     price = round(float(message.text), 2)
     await state.update_data({'product_price': price})
 
     image, reply_markup = await def_choice_product_color(session, state, 35)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_text_product_color(message: types.Message, state: FSMContext, session: AsyncSession, data_state):
+async def def_text_product_color(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state):
     # сохраняю цвет товара
     await orm_add_product_color(session, message.text)
     image, reply_markup = await def_choice_product_size(session, state, 36, message.text)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_text_product_size(message: types.Message, state: FSMContext, session: AsyncSession, data_state):
+async def def_text_product_size(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state):
     # сохраняю размер товара
     await orm_add_product_size(session, message.text)
     image, reply_markup = await def_choice_product_gender(session, state, 37, message.text)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_text_product_gender(message: types.Message, state: FSMContext, session: AsyncSession, data_state):
+async def def_text_product_gender(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state):
     # сохраняю пол товара
     await orm_add_product_gender(session, message.text)
     image, reply_markup = await def_choice_product_composition(session, state, 38, message.text)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_text_product_composition(message: types.Message, state: FSMContext, session: AsyncSession, data_state):
+async def def_text_product_composition(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state):
     # сохраняю состав товара
     await orm_add_product_composition(session, message.text)
     image, reply_markup = await def_choice_product_description(state, 39, message.text)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_text_product_description(message: types.Message, state: FSMContext, data_state):
+async def def_text_product_description(bot: Bot, message: types.Message, state: FSMContext, data_state):
     # сохраняю описание товара
     await state.update_data({'product_description': message.text})
     image, reply_markup = await def_choice_product_link(state, 40)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
-async def def_text_product_link(message: types.Message, state: FSMContext, session: AsyncSession, data_state):
+async def def_text_product_link(
+        bot: Bot, message: types.Message, state: FSMContext, session: AsyncSession, data_state):
     # принимаю ссылку
     await state.update_data({'product_link': message.text})
-    image, reply_markup = await def_choice_product_end(session, state)
-    await def_refresh_message(data_state, image, reply_markup)
+    image, reply_markup = await def_choice_product_end(bot, session, state)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 
 
 # *****************************************************************************************
-async def def_text_answer_question(message: types.Message, state: FSMContext, session: AsyncSession, bot: Bot, data_state, get_message):
+async def def_text_answer_question(
+        message: types.Message, state: FSMContext, session: AsyncSession, bot: Bot, data_state, get_message):
     # сохраняю ответ для покупателя
     id_question = int(get_message.split("_")[-1])
     await orm_answer_question(session, id_question, message.text)
 
     # отправляю ответ покупателю
-    telegram_id = data_state['telegram_id']
+    telegram_id = data_state['telegram_id_answer']
     reply_markup = get_user_answer_from_admin_btns(answer_id=id_question)
     await bot.send_message(chat_id=telegram_id,
                            text=f'Вам пришел ответ на ваш вопрос!',
                            reply_markup=reply_markup)
 
     await state.update_data({'get_message': f''})
-    await state.update_data({'telegram_id': None})
+    await state.update_data({'telegram_id_answer': None})
 
     return await def_list_out_one_question_parents(
-        message, session, state, '', 23, 10, 30, id_question, True)
-
-
-
+        message, bot, session, state, '', 23, 10, 30, id_question, True)

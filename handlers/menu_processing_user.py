@@ -1,21 +1,21 @@
-import datetime
-import os
-
 from aiogram import Bot, types
-from aiogram.types import InputMediaPhoto, LabeledPrice
+from aiogram.types import InputMediaPhoto
 from aiogram.fsm.context import FSMContext
 
-import handlers.user
 from database.default_setting import load_list_admins
-
 from database.orm_query import *
+
 from handlers.menu_processing_admin import def_main_menu_admin
 from handlers.menu_together_use import (def_pages,
                                         def_list_out_one_question_parents,
                                         def_question_change_photo,
-                                        def_clear_question_message, def_question_history)
-from keyboards.inline_together_use import get_empty_btns
+                                        def_question_history,
+                                        def_clear_question_message,
+                                        def_question_main_user,
+                                        def_start_timer_clear_messages, scheduler, TIME_CLEAR_MESSAGE,
+                                        def_timer_clear_messages)
 
+from keyboards.inline_together_use import get_empty_btns
 from keyboards.inline_user import *
 
 from utils.paginator import Paginator
@@ -35,20 +35,20 @@ async def get_menu_content(
         product_id: int,
         category: int | None = None,
         page: int | None = None,
-        telegram_id: int | None = None,
         read_description: bool | None = None,
 ):
 
     if level == 0:
-        return await def_main_menu_user(session, state, bot, telegram_id, level)
+        return await def_main_menu_user(session, state, bot, level)
     elif level == 1:
-        return await def_catalog(session, state, level)
+        return await def_catalog(session, bot, state)
     elif level == 2:
-        return await def_type(message, session, state, level, category, menu_name)
+        return await def_type(message, bot, session, state, level, category, menu_name)
     elif level == 3:
-        return await def_products(message, session, state, category, menu_name)
+        return await def_products(message, bot, session, state, category, menu_name)
     elif level == 4:
-        return await def_product_change_photo(session, state, product_id, category, page, menu_name, read_description)
+        return await def_product_change_photo(
+            bot, session, state, product_id, category, page, menu_name, read_description)
 
     elif level == 10:
         return await def_information(session, level)
@@ -58,40 +58,44 @@ async def get_menu_content(
         return await def_for_devolep(session, state, level)
 
     elif level == 20:
-        return await def_question_main(session, state, level)
+        return await def_question_main(session, bot, state)
     elif level == 21:
         return await def_question_theme_choice(session, level)
     elif level == 22:
-        return await def_new_question_ask(session, state, level, menu_name, category)
+        return await def_new_question_ask(session, state, menu_name, category)
     elif level == 23:
         return await def_question_change_photo(
-            session, state, level, 21, menu_name, category, product_id, False, page)
+            session, bot, state, level, 21, menu_name, category, product_id, False, page)
     elif level == 24:
         return await def_list_out_one_question_parents(
-            message, session, state, menu_name, level, 21, 10, product_id, False)
+            message, bot, session, state, menu_name, level, 21, 10, product_id, False)
 
     elif level == 25:
         return await def_question_history(
-            message, state, session, level, 20, telegram_id, False, False)
+            message, bot, state, session, level, 20, False, False)
     elif level == 26:
         return await def_question_change_photo(
-            session, state, level, 20, menu_name, category, product_id, False, page)
+            session, bot, state, level, 20, menu_name, category, product_id, False, page)
     elif level == 27:
         return await def_list_out_one_question_parents(
-            message, session, state, menu_name, level, 25, 10, product_id, False)
+            message, bot, session, state, menu_name, level, 25, 10, product_id, False)
 
     else:
-        return await def_main_menu_user(session, state, bot, telegram_id, level)
+        return await def_main_menu_user(session, state, bot, level)
 
 
 # level=0
-async def def_main_menu_user(session: AsyncSession, state: FSMContext, bot: Bot, telegram_id: int, level: int):
+async def def_main_menu_user(session: AsyncSession, state: FSMContext, bot: Bot, level: int):
     # проверка на админа после перезагрузки сервера или смены интерфейса
     await load_list_admins(session, bot)  # загрузка из бд адресов админа и владельца
-    if telegram_id in bot.my_admins_list:
-        return await def_main_menu_admin(session, state, level)
 
-    await def_clear_question_message(state)
+    data_state = await state.get_data()
+    telegram_id = data_state['telegram_id']
+
+    if telegram_id in bot.my_admins_list:
+        return await def_main_menu_admin(session, bot, state, level)
+
+    await def_clear_question_message(bot, state)
     await state.update_data({'get_message': ''})
 
     result = await orm_get_general(session, 'main')
@@ -101,24 +105,19 @@ async def def_main_menu_user(session: AsyncSession, state: FSMContext, bot: Bot,
 
 
 # level=1
-async def def_catalog(session: AsyncSession, state: FSMContext, level: int):
-    await def_clear_question_message(state)
-
-    categories = await orm_get_prod_cats(session)
-
-    result = await orm_get_general(session, 'catalog')
-    image = InputMediaPhoto(media=result.picture, caption="Категории:")
-    reply_markup = get_user_catalog_btns(level=level, categories=categories)
-    return image, reply_markup
+async def def_catalog(session: AsyncSession, bot: Bot, state: FSMContext):
+    return await def_question_main_user(session, bot, state, False)
 
 
 # level=2
-async def def_type(message: types.Message, session: AsyncSession, state: FSMContext, level: int, category: int, menu_name: str):
+async def def_type(
+        message: types.Message, bot: Bot, session: AsyncSession, state: FSMContext,
+        level: int, category: int, menu_name: str):
     # поиск типов
     categories = await orm_get_prod_cat_no_types(session, menu_name)
     if len(categories) == 0:
         #  типов для этой категории нет, перехожу в товары
-        return await def_products(message, session, state, category, menu_name)
+        return await def_products(message, bot, session, state, category, menu_name)
 
     image = InputMediaPhoto(media=categories[0].picture, caption=f'Типы категории: "{categories[0].cat_name}"')
     reply_markup = get_user_catalog_type_btns(level=level, categories=categories)
@@ -126,8 +125,12 @@ async def def_type(message: types.Message, session: AsyncSession, state: FSMCont
 
 
 # level=3
-async def def_products(message: types.Message, session: AsyncSession, state: FSMContext, category: int, menu_name: str):
+async def def_products(
+        message: types.Message, bot: Bot, session: AsyncSession, state: FSMContext,
+        category: int, menu_name: str):
+
     cat_name = menu_name
+
     products = await orm_get_products(session, cat_id=category, frozen=False)
 
     image_first, reply_markup_first = await def_out_pictures_in_product(session, 1, products[0], cat_name, 1)
@@ -138,10 +141,11 @@ async def def_products(message: types.Message, session: AsyncSession, state: FSM
         product = products[count]
         count += 1
         image, reply_markup = await def_out_pictures_in_product(session, 1, product, cat_name, 0)
-        message_product = await message.answer_photo(photo=image.media, caption=image.caption, reply_markup=reply_markup, parse_mode='Markdown')
-        message_show.update({product.id: message_product})
+        message_product = await message.answer_photo(
+            photo=image.media, caption=image.caption, reply_markup=reply_markup, parse_mode='Markdown')
+        message_show.update({product.id: message_product.message_id})
 
-    await state.update_data({'message_show': message_show})
+    await def_start_timer_clear_messages(session, bot, state, message_show, False, False)
 
     return image_first, reply_markup_first
 
@@ -178,11 +182,14 @@ async def def_out_pictures_in_product(
 
 # level=4
 async def def_product_change_photo(
-        session: AsyncSession, state: FSMContext, product_id, category: int, page: int, menu_name: str, read_description: bool):
+        bot: Bot, session: AsyncSession, state: FSMContext, product_id, category: int, page: int,
+        menu_name: str, read_description: bool):
+
     cat_name = menu_name
     product = await orm_get_product_id(session, id=product_id)
 
     data_state = await state.get_data()
+    telegram_id = data_state['telegram_id']
     if category == 1:
         #  первое сообщение
         first = 1
@@ -190,24 +197,36 @@ async def def_product_change_photo(
     else:
         first = 0
         message_show = data_state['message_show']
-        edit_message = message_show[product.id]
+        edit_message = message_show[str(product.id)]
 
     image, reply_markup = await def_out_pictures_in_product(session, page, product, cat_name, first, read_description)
-    await edit_message.edit_media(media=image, reply_markup=reply_markup)
+    # await edit_message.edit_media(media=image, reply_markup=reply_markup)
+    await bot.edit_message_media(media=image,
+                                 chat_id=telegram_id,
+                                 message_id=edit_message,
+                                 reply_markup=reply_markup)
+
+    scheduler_job_id = data_state['scheduler_job_id']
+    if scheduler_job_id != '':
+        if scheduler.get_job(scheduler_job_id) != None:
+            # scheduler.reschedule_job(job_id=scheduler_job_id, trigger='interval', seconds=TIME_CLEAR_MESSAGE)
+            scheduler.reschedule_job(job_id=scheduler_job_id, trigger='interval', hours=TIME_CLEAR_MESSAGE)
+
+        else:
+            scheduler_job = scheduler.add_job(func=def_timer_clear_messages,
+                                              trigger='interval',
+                                              hours=TIME_CLEAR_MESSAGE,
+                                              # seconds=TIME_CLEAR_MESSAGE,
+                                              args=(session, bot, state, False, telegram_id, False))
+            await state.update_data({'scheduler_job_id': scheduler_job.id})
+
     return None, None
 
 
 # ***********************************************************************************************
 # level=20
-async def def_question_main(session: AsyncSession, state: FSMContext, level: int):
-    await def_clear_question_message(state)
-    await state.update_data({'get_message': ''})
-
-    themes = await orm_get_category_questions(session)
-    result = await orm_get_general(session, 'question')
-    image = InputMediaPhoto(media=result.picture, caption='Задайте новый вопрос или посмотрите истории запросов:')
-    reply_markup = get_user_question_main_btns(level=level)
-    return image, reply_markup
+async def def_question_main(session: AsyncSession, bot: Bot, state: FSMContext):
+    return await def_question_main_user(session, bot, state, True)
 
 
 # level=21
@@ -220,13 +239,14 @@ async def def_question_theme_choice(session: AsyncSession, level: int):
 
 
 # level=22
-async def def_new_question_ask(session: AsyncSession, state: FSMContext, level: int, menu_name: str, category: int):
+async def def_new_question_ask(session: AsyncSession, state: FSMContext, menu_name: str, category: int):
     await state.update_data({'get_message': 'new_question_text'})
     await state.update_data({'category_question_id': category})
     # await state.update_data({'cat_name': menu_name})
 
     theme = await orm_get_name_category_question(session, menu_name)
-    image = InputMediaPhoto(media=theme.picture, caption=f'{theme.description} \n\n*Напишите вопрос.*', parse_mode='Markdown')
+    image = InputMediaPhoto(
+        media=theme.picture, caption=f'{theme.description} \n\n*Напишите вопрос.*', parse_mode='Markdown')
     reply_markup = get_empty_btns(level_back=21)
     return image, reply_markup
 
@@ -257,4 +277,3 @@ async def def_for_devolep(session, state, level):
     image = InputMediaPhoto(media=result.picture, caption=caption)
     reply_markup = get_user_about_btns(level=level)
     return image, reply_markup
-

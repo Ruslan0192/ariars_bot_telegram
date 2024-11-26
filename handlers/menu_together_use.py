@@ -1,8 +1,15 @@
-from aiogram.fsm.context import FSMContext
 from aiogram import Bot, types
 from aiogram.types import InputMediaPhoto
+from aiogram.fsm.context import FSMContext
+
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.redis import RedisJobStore
+# from apscheduler_di import ContextSchedulerDecorator
+
+
 
 from database.models import Questions
 from database.orm_query import (orm_get_question_pictures,
@@ -10,12 +17,29 @@ from database.orm_query import (orm_get_question_pictures,
                                 orm_get_user, orm_get_question_id,
                                 orm_get_questions_telegram,
                                 orm_get_general,
-                                orm_get_archive_questions,
                                 orm_get_new_questions,
-                                orm_get_parents_questions, orm_get_active_questions, orm_get_active_telegram_questions)
+                                orm_get_active_questions,
+                                orm_get_active_telegram_questions, orm_get_prod_cats)
+# from database.redis_jobstore import RedisJobStore
+
+from keyboards.inline_admin import get_admin_questions_byers_btns
+
 from keyboards.inline_together_use import get_history_questions_btns, get_empty_btns
+from keyboards.inline_user import get_user_question_main_btns, get_user_catalog_btns
 
 from utils.paginator import Paginator
+
+
+job_stores = {
+    'redis': RedisJobStore()}
+scheduler = AsyncIOScheduler(jobstores=job_stores)
+
+# scheduler = ContextSchedulerDecorator(AsyncIOScheduler(timezone="Europe/Moscow", jobstores=jobstores))
+
+
+
+# 23 часа до сброса сообщений message_show
+TIME_CLEAR_MESSAGE = 23
 
 
 def def_pages(paginator: Paginator):
@@ -26,18 +50,6 @@ def def_pages(paginator: Paginator):
     if paginator.has_next():
         btns["След. ▶"] = "next"
     return btns
-
-
-async def def_clear_question_message(state: FSMContext):
-    data_state = await state.get_data()
-    try:
-        message_show = data_state['message_show']
-        for key, message_product in message_show.items():
-            await message_product.delete()
-    except:
-        pass
-    await state.update_data({'message_show': {}})
-    # await state.update_data({'get_message': ''})
 
 
 async def def_out_pictures_in_question(session: AsyncSession,
@@ -85,7 +97,7 @@ async def def_out_pictures_in_question(session: AsyncSession,
                 # ответа не было
                 caption += f"\n\n*Напишите ответ*"
                 await state.update_data({'get_message': f'textanswerquestion_{question.id}'})
-                await state.update_data({'telegram_id': question.telegram_id})
+                await state.update_data({'telegram_id_answer': question.telegram_id})
             else:
                 caption += f"\n*Ответ* от {time_answer}:\n_{question.answer_text}_"
 
@@ -138,13 +150,76 @@ async def def_out_pictures_in_question(session: AsyncSession,
     return media, caption, reply_markup
 
 
+async def def_clear_question_message(bot: Bot, state: FSMContext):
+    data_state = await state.get_data()
+    scheduler_job_id = data_state['scheduler_job_id']
+    get_message = data_state['get_message']
+    edit_message = data_state['edit_message']
+    telegram_id = data_state['telegram_id']
+
+    if scheduler_job_id != '':
+        telegram_id = data_state['telegram_id']
+        message_show = data_state['message_show']
+        messages_delete = list(message_show.values())
+        await bot.delete_messages(telegram_id, messages_delete)
+
+        if scheduler.get_job(scheduler_job_id) != None:
+            scheduler.remove_job(scheduler_job_id)
+
+    await state.clear()
+    await state.update_data({'telegram_id': telegram_id})
+    await state.update_data({'scheduler_job_id': ''})
+    await state.update_data({'get_message': get_message})
+    await state.update_data({'edit_message': edit_message})
+
+
+async def def_start_timer_clear_messages(
+        session: AsyncSession, bot: Bot, state: FSMContext, message_show: dict,
+        admin: bool, question: bool = True):
+
+    data_state = await state.get_data()
+    telegram_id = data_state['telegram_id']
+
+    if message_show != {}:
+        # есть дополнительные сообщения, запускаю таймер для автоудаления через 23 часа
+        await state.update_data({'message_show': message_show})
+
+        scheduler_job = scheduler.add_job(func=def_timer_clear_messages,
+                                          # jobstore='redis',
+                                          trigger='interval',
+                                          hours=TIME_CLEAR_MESSAGE,
+                                          # seconds=TIME_CLEAR_MESSAGE,
+                                          args=(session, bot, state, admin, telegram_id, question))
+        await state.update_data({'scheduler_job_id': scheduler_job.id})
+
+
+async def def_timer_clear_messages(
+        session: AsyncSession, bot: Bot, state: FSMContext, admin: bool, telegram_id: int, question: bool):
+
+    await def_clear_question_message(bot, state)
+    await state.update_data({'get_message': f''})
+
+    data_state = await state.get_data()
+    edit_message = data_state['edit_message']
+
+    if admin:
+        image, reply_markup = await def_questions_byers_admin(session, bot, state, 20)
+    else:
+        image, reply_markup = await def_question_main_user(session, bot, state, question)
+
+    await bot.edit_message_media(media=image,
+                                 chat_id=telegram_id,
+                                 message_id=edit_message,
+                                 reply_markup=reply_markup)
+
+
 # level = 21 и 25
 async def def_question_history(message: types.Message,
+                               bot: Bot,
                                state: FSMContext,
                                session: AsyncSession,
                                level: int,
                                level_back: int,
-                               telegram_id: int,
                                admin: bool,
                                new: bool):
     type_message = 0
@@ -154,16 +229,19 @@ async def def_question_history(message: types.Message,
         else:
             archive_questions = await orm_get_active_questions(session)
     else:
+        data_state = await state.get_data()
+        telegram_id = data_state['telegram_id']
         archive_questions = await orm_get_active_telegram_questions(session, telegram_id)
 
     if len(archive_questions) == 0:
         result = await orm_get_general(session, 'question')
-        image = InputMediaPhoto(media=result.picture, caption='Переписки не было!')
+        image = InputMediaPhoto(media=result.picture, caption='Нет новых вопросов!')
         reply_markup = get_empty_btns(level_back=level_back)
         return image, reply_markup
 
     return await def_list_out_questions(message=message,
                                         session=session,
+                                        bot=bot,
                                         state=state,
                                         level=level+1,
                                         questions=archive_questions,
@@ -174,6 +252,7 @@ async def def_question_history(message: types.Message,
 
 async def def_list_out_questions(message: types.Message,
                                  session: AsyncSession,
+                                 bot: Bot,
                                  state: FSMContext,
                                  level: int,
                                  questions: list,
@@ -182,15 +261,12 @@ async def def_list_out_questions(message: types.Message,
                                  admin: bool):
     """ выдает список всех вопросов находящихся в question. Последнее сообщение с меню"""
     # убрать все вопросы, вывести все заново
-    await def_clear_question_message(state)
+    await def_clear_question_message(bot, state)
 
     data_state = await state.get_data()
-    try:
-        edit_message = data_state['edit_message']
-        await edit_message.delete()
-    except:
-        pass
-
+    telegram_id = data_state['telegram_id']
+    edit_message = data_state['edit_message']
+    await bot.delete_message(telegram_id, edit_message)
 
     if int(type_message/10) == 0:
         # для вывода истории по всем темам
@@ -219,9 +295,11 @@ async def def_list_out_questions(message: types.Message,
         if photo == '':
             message_product = await message.answer(text=caption, reply_markup=reply_markup, parse_mode='Markdown')
         else:
-            message_product = await message.answer_photo(photo=photo, caption=caption, reply_markup=reply_markup, parse_mode='Markdown')
-        message_show.update({question.id: message_product})
-    await state.update_data({'message_show': message_show})
+            message_product = await message.answer_photo(
+                photo=photo, caption=caption, reply_markup=reply_markup, parse_mode='Markdown')
+        message_show.update({question.id: message_product.message_id})
+
+    await def_start_timer_clear_messages(session, bot, state, message_show, admin)
 
     # последнее сообщение с меню
     question = questions[max_index_questions]
@@ -238,14 +316,46 @@ async def def_list_out_questions(message: types.Message,
     if photo == '':
         result = await orm_get_general(session, 'question')
         photo = result.picture
-    edit_message = await message.answer_photo(photo=photo, caption=caption, reply_markup=reply_markup, parse_mode='Markdown')
-    await state.update_data({'edit_message': edit_message})
+    edit_message = await message.answer_photo(
+        photo=photo, caption=caption, reply_markup=reply_markup, parse_mode='Markdown')
+    await state.update_data({'edit_message': edit_message.message_id})
 
     return None, None
 
 
+# level=20 admin
+async def def_questions_byers_admin(session: AsyncSession, bot: Bot, state: FSMContext, level: int):
+    await def_clear_question_message(bot, state)
+    result = await orm_get_general(session, 'question')
+    image = InputMediaPhoto(media=result.picture, caption='Работа с вопросами покупателей')
+    reply_markup = get_admin_questions_byers_btns(level=level)
+    return image, reply_markup
+
+
+# level=1 and 20 user
+async def def_question_main_user(
+        session: AsyncSession, bot: Bot, state: FSMContext, question: bool):
+    await def_clear_question_message(bot, state)
+    await state.update_data({'get_message': ''})
+
+    # themes = await orm_get_category_questions(session)
+    if question:
+        result = await orm_get_general(session, 'question')
+        caption = 'Задайте новый вопрос или посмотрите истории запросов:'
+        reply_markup = get_user_question_main_btns(level=20)
+    else:
+        categories = await orm_get_prod_cats(session)
+        result = await orm_get_general(session, 'catalog')
+        caption = "Категории:"
+        reply_markup = get_user_catalog_btns(level=1, categories=categories)
+
+    image = InputMediaPhoto(media=result.picture, caption=caption)
+    return image, reply_markup
+
+
 # level = 23 и 26
 async def def_question_change_photo(session: AsyncSession,
+                                    bot: Bot,
                                     state: FSMContext,
                                     level: int,
                                     level_back: int,
@@ -258,12 +368,13 @@ async def def_question_change_photo(session: AsyncSession,
     question = await orm_get_question_id(session, id=product_id)
 
     data_state = await state.get_data()
+    telegram_id = data_state['telegram_id']
     if category % 10 == 1:
         #  сообщение с меню
         edit_message = data_state['edit_message']
     else:
         message_show = data_state['message_show']
-        edit_message = message_show[question.id]
+        edit_message = message_show[str(question.id)]
 
     media, caption, reply_markup = await def_out_pictures_in_question(session=session,
                                                                       state=state,
@@ -275,12 +386,30 @@ async def def_question_change_photo(session: AsyncSession,
                                                                       theme_name=menu_name,
                                                                       page=page)
     image = InputMediaPhoto(media=media, caption=caption, parse_mode='Markdown')
-    await edit_message.edit_media(media=image, reply_markup=reply_markup)
+    await bot.edit_message_media(media=image,
+                                 chat_id=telegram_id,
+                                 message_id=edit_message,
+                                 reply_markup=reply_markup)
+
+    scheduler_job_id = data_state['scheduler_job_id']
+    if scheduler_job_id != '':
+        if scheduler.get_job(scheduler_job_id) != None:
+            # scheduler.reschedule_job(job_id=scheduler_job_id, trigger='interval', seconds=TIME_CLEAR_MESSAGE)
+            scheduler.reschedule_job(job_id=scheduler_job_id, trigger='interval', hours=TIME_CLEAR_MESSAGE)
+        else:
+            scheduler_job = scheduler.add_job(func=def_timer_clear_messages,
+                                              trigger='interval',
+                                              hours=TIME_CLEAR_MESSAGE,
+                                              # seconds=TIME_CLEAR_MESSAGE,
+                                              args=(session, bot, state, admin, telegram_id, question))
+            await state.update_data({'scheduler_job_id': scheduler_job.id})
+
     return None, None
 
 
 # level = 24 и 27
 async def def_list_out_one_question_parents(message: types.Message,
+                                            bot: Bot,
                                             session: AsyncSession,
                                             state: FSMContext,
                                             menu_name: str,
@@ -290,11 +419,12 @@ async def def_list_out_one_question_parents(message: types.Message,
                                             id_question: int,
                                             admin: bool,
                                             ):
-    """ выдает список вопросов для одной ветки переписки: первый прародитель, затем все дочки. Последнее сообщение с меню"""
+    """ выдает список вопросов для одной ветки переписки: первый прародитель, затем все дочки.
+    Последнее сообщение с меню"""
     if admin == False and menu_name == 'answeradmin':
         # пришел ответ от администратора
         await message.delete()
-    if admin == True and menu_name == 'questionuser':
+    if admin and menu_name == 'questionuser':
         # пришел вопрос от покупателя
         await message.delete()
 
@@ -312,6 +442,7 @@ async def def_list_out_one_question_parents(message: types.Message,
         out_question += questions
     return await def_list_out_questions(message=message,
                                         session=session,
+                                        bot=bot,
                                         state=state,
                                         level=level-1,
                                         questions=out_question,

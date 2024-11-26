@@ -1,12 +1,7 @@
-import datetime
-import os
 
 from aiogram import F, types, Router, Bot
-from aiogram.enums import ContentType
 from aiogram.filters import CommandStart
-from aiogram.types import InputMediaPhoto
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 
 from loguru import logger
 
@@ -14,15 +9,13 @@ from filters.class_filters import IsUser
 
 from handlers.admin import def_main_menu_admin
 from handlers.menu_processing_user import get_menu_content, def_information
+from handlers.menu_together_use import def_list_out_one_question_parents
 
 from database.orm_query import *
 from database.default_setting import load_list_admins
-from handlers.menu_together_use import def_clear_question_message, def_list_out_one_question_parents, \
-    def_question_change_photo
+
 from keyboards.inline_admin import get_admin_question_from_user_btns
-
 from keyboards.inline_together_use import MenuCallBack
-
 from keyboards.inline_user import get_user_main_btns
 
 user_router = Router()
@@ -33,51 +26,58 @@ async def start_cmd(message: types.Message, session: AsyncSession, state: FSMCon
     # проверка наличия БД
     await message.delete()
 
+    telegram_id = message.from_user.id
     result = await orm_get_users(session=session)
     if len(result) == 0:
-        #БД чистая, первый будет superadmin
-        await orm_add_user(session=session, telegram_id=message.from_user.id, name=message.from_user.first_name)
-        await orm_add_admin(session=session, telegram_id=message.from_user.id, superadmin=True)
+        # БД чистая, первый будет superadmin
+        await orm_add_user(session=session, telegram_id=telegram_id, name=message.from_user.first_name)
+        await orm_add_admin(session=session, telegram_id=telegram_id, superadmin=True)
 
-        bot.my_admins_list.append(message.from_user.id)
-        bot.superadmin = message.from_user.id
+        bot.my_admins_list.append(telegram_id)
+        bot.superadmin = telegram_id
 
         logger.info("Зарегистрирован superadmin",
-                    telegram_id=message.from_user.id,
+                    telegram_id=telegram_id,
                     name=message.from_user.first_name)
         del_message = await message.answer('Бот "Ariars" приветствует своего разработчика!,\n'
                                            'Вставьте фото по умолчанию')
         await state.update_data({'del_message': del_message})
         await state.update_data({'get_message': 'default'})
     else:
+        await state.update_data({'telegram_id': telegram_id})
+        await state.update_data({'scheduler_job_id': ''})
+        await state.update_data({'get_message': ''})
+        await state.update_data({'edit_message': ''})
+
         result = await orm_get_general(session, 'hello_description')
         picture = result.picture
         caption = result.description
         reply_markup = get_user_main_btns(level=0)
 
         # проверка на наличие пользователя
-        result = await orm_get_user(session=session, telegram_id=message.from_user.id)
+        result = await orm_get_user(session=session, telegram_id=telegram_id)
         if result == None:
             # запись нового пользователя
-            await orm_add_user(session=session, telegram_id=message.from_user.id, name=message.from_user.first_name)
+            await orm_add_user(session=session, telegram_id=telegram_id, name=message.from_user.first_name)
 
         # зашел зарегистрированный пользователь
         logger.info("Пользователь вошел в бот",
-                    telegram_id=message.from_user.id,
+                    telegram_id=telegram_id,
                     name=message.from_user.first_name)
 
         # проверка на админа и владельца
         await load_list_admins(session, bot)  # загрузка из бд адресов админа и владельца
-        if message.from_user.id in bot.my_admins_list:
+        if telegram_id in bot.my_admins_list:
             # админ, он уйдет в админку
-            if message.from_user.id == bot.superadmin:
+            if telegram_id == bot.superadmin:
                 caption = 'Бот "Ariars" приветствует своего владельца!'
             else:
                 caption = 'Бот "Ariars" приветствует своего администратора!'
-            image, reply_markup = await def_main_menu_admin(session, state, level=0)
+            image, reply_markup = await def_main_menu_admin(session, bot, state, level=0)
 
         edit_message = await message.answer_photo(photo=picture, caption=caption, reply_markup=reply_markup)
-        await state.update_data({'edit_message': edit_message})
+        await state.update_data({'edit_message': edit_message.message_id})
+
 
 
 @user_router.callback_query(MenuCallBack.filter(), IsUser())
@@ -92,18 +92,28 @@ async def user_menu(callback: types.CallbackQuery, callback_data: MenuCallBack, 
             product_id=callback_data.product_id,
             category=callback_data.category,
             page=callback_data.page,
-            telegram_id=callback.from_user.id,
             read_description=callback_data.read_description)
 
+    # if image != None:
+    #     edit_message = await callback.message.edit_media(media=image, reply_markup=reply_markup, parse_mode='Markdown')
+    #     await state.update_data({'edit_message': edit_message.message_id})
+    #     await callback.answer()
     if image != None:
-        edit_message = await callback.message.edit_media(media=image, reply_markup=reply_markup, parse_mode='Markdown')
-        await state.update_data({'edit_message': edit_message})
-        await callback.answer()
+        data_state = await state.get_data()
+        edit_message = data_state['edit_message']
+        await bot.edit_message_media(media=image,
+                                     chat_id=callback.from_user.id,
+                                     message_id=edit_message,
+                                     reply_markup=reply_markup)
 
 
-async def def_refresh_message(data_state, image, reply_markup):
+async def def_refresh_message(bot: Bot, data_state: dict, telegram_id: int, image, reply_markup):
     edit_message = data_state['edit_message']
-    await edit_message.edit_media(media=image, reply_markup=reply_markup)
+    # await edit_message.edit_media(media=image, reply_markup=reply_markup)
+    await bot.edit_message_media(media=image,
+                                 chat_id=telegram_id,
+                                 message_id=edit_message,
+                                 reply_markup=reply_markup)
 
 
 # ******************************************************************************************************
@@ -119,17 +129,17 @@ async def def_message_foto(message: types.Message, state: FSMContext, session: A
     await message.delete()
 
     if get_message.startswith("newquestionphoto_"):
-        await def_photo_new_question(message, session, state, data_state, picture, caption)
+        await def_photo_new_question(message, bot, session, state, data_state, picture, caption)
 
 
-async def def_photo_new_question(message: types.Message, session: AsyncSession, state: FSMContext, data_state, picture, caption):
+async def def_photo_new_question(message: types.Message, bot: Bot, session: AsyncSession, state: FSMContext, data_state, picture, caption):
     # сохраняю фото к вопросу
     question_id = int(data_state['get_message'].split("_")[-1])
     # сохраняю фото к вопросу
     await orm_add_questions_pictures(session, question_id, picture, caption)
 
     await def_list_out_one_question_parents(
-        message, session, state, '', 24, 21, 20, question_id, False)
+        message, bot, session, state, '', 24, 21, 20, question_id, False)
 
 
 # ****************************************************************************************************
@@ -157,8 +167,8 @@ async def def_user_to_admin(state: FSMContext, session: AsyncSession, bot: Bot, 
             await orm_change_user_admin(session, telegram_id)
             await load_list_admins(session, bot)  # загрузка из бд адресов админа и владельца
 
-            image, reply_markup = await def_main_menu_admin(session, state, level=0)
-            await def_refresh_message(data_state, image, reply_markup)
+            image, reply_markup = await def_main_menu_admin(session, bot, state, level=0)
+            await def_refresh_message(bot, data_state, telegram_id, image, reply_markup)
 
 
 async def def_text_new_question(
@@ -184,7 +194,7 @@ async def def_text_new_question(
     await state.update_data({'get_message': f'newquestionphoto_{question_id}'})
     # для вывода карточки с фото
     await def_list_out_one_question_parents(
-        message, session, state, '', 24, 21, 20, question_id, False)
+        message, bot, session, state, '', 24, 21, 20, question_id, False)
 
 
 
@@ -223,7 +233,7 @@ async def def_text_answer_question(
     await state.update_data({'get_message': f'newquestionphoto_{question_id}'})
     # для вывода карточки с фото
     await def_list_out_one_question_parents(
-        message, session, state, '', 24, 21, 20, question_id, False)
+        message, bot, session, state, '', 24, 21, 20, question_id, False)
 
 
 # *****************************************************************************
@@ -240,5 +250,5 @@ async def def_text_for_devoloper(
     await bot.send_message(chat_id=177378414, text=question_text)
     # ухожу в раздел информация
     image, reply_markup = await def_information(session, 10)
-    await def_refresh_message(data_state, image, reply_markup)
+    await def_refresh_message(bot, data_state, message.from_user.id, image, reply_markup)
 

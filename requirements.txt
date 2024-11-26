@@ -6,3 +6,5 @@ install
     sqlalchemy
     asyncpg
     notifiers
+    redis
+    apscheduler

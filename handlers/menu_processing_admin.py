@@ -2,19 +2,20 @@ from aiogram import Bot, types
 from aiogram.types import InputMediaPhoto
 from aiogram.fsm.context import FSMContext
 
-from dotenv import find_dotenv, load_dotenv
-
-from handlers.menu_together_use import def_pages, def_list_out_one_question_parents, \
-    def_clear_question_message, def_question_change_photo, def_question_history
-from keyboards.inline_together_use import get_empty_btns
-
-load_dotenv(find_dotenv())
+from handlers.menu_together_use import (def_pages,
+                                        def_list_out_one_question_parents,
+                                        def_question_change_photo,
+                                        def_question_history, def_clear_question_message, def_questions_byers_admin)
 
 from database.orm_query import *
 
 from keyboards.inline_admin import *
+from keyboards.inline_together_use import get_empty_btns
 
 from utils.paginator import Paginator
+
+from dotenv import find_dotenv, load_dotenv
+load_dotenv(find_dotenv())
 
 
 async def get_admin_menu_content(
@@ -26,10 +27,9 @@ async def get_admin_menu_content(
         menu_name: str,
         product_id: int,
         category: int | None = None,
-        page: int | None = None,
-        telegram_id: int | None = None):
+        page: int | None = None):
     if level == 0:
-        return await def_main_menu_admin(session, state, level)
+        return await def_main_menu_admin(session, bot, state, level)
     elif level == 1:
         return await def_catalog(session, state, level)
     elif level == 2:
@@ -40,7 +40,7 @@ async def get_admin_menu_content(
         return await def_delete_product(session, state, product_id, category, page)
 
     elif level == 10:
-        return await def_information(session, state, level)
+        return await def_information(session, level)
     elif level == 11:
         return await def_themes(session, state, level, page)
     elif level == 12:
@@ -52,33 +52,33 @@ async def get_admin_menu_content(
         return await def_general(session, state, level, page)
 
     elif level == 20:
-        return await def_questions_byers(session, state, level)
+        return await def_questions_byers(session, bot, state, level)
     elif level == 21:
         return await def_question_history(
-            message, state, session, level, 20, telegram_id, True, True)
+            message, bot, state, session, level, 20, True, True)
     elif level == 22:
         return await def_question_change_photo(
-            session, state, level, 21, menu_name, category, product_id, True, page)
+            session, bot, state, level, 21, menu_name, category, product_id, True, page)
     elif level == 23:
         return await def_list_out_one_question_parents(
-            message, session, state, menu_name, level, 21, 10, product_id, True)
+            message, bot, session, state, menu_name, level, 21, 10, product_id, True)
 
     elif level == 25:
         return await def_question_history(
-            message, state, session, level, 20, telegram_id, True, False)
+            message, bot, state, session, level, 20, True, False)
     elif level == 26:
         return await def_question_change_photo(
-            session, state, level, 20, menu_name, category, product_id, True, page)
+            session, bot, state, level, 20, menu_name, category, product_id, True, page)
     elif level == 27:
         return await def_list_out_one_question_parents(
-            message, session, state, menu_name, level, 25, 10, product_id, True)
+            message, bot, session, state, menu_name, level, 25, 10, product_id, True)
 
     elif level == 30:
-        return await def_delete_photo_product(session, state, level, page)
+        return await def_delete_photo_product(session, state, page)
     elif level == 31:
-        return await def_copy_product(session, state, level, product_id)
+        return await def_copy_product(session, state, product_id)
     elif level == 32:
-        return await def_edit_product(session, state, level, product_id)
+        return await def_edit_product(session, state, product_id)
     elif level == 33:
         return await def_choice_product_photo(session, state, level, page)
     elif level == 34:
@@ -96,10 +96,10 @@ async def get_admin_menu_content(
     elif level == 40:
         return await def_choice_product_link(state, level)
     elif level == 41:
-        return await def_choice_product_end(session, state)
+        return await def_choice_product_end(bot, session, state)
 
     else:
-        return await def_main_menu_admin(session, state, level)
+        return await def_main_menu_admin(session, bot, state, level)
 
 
 async def def_empty_return(session: AsyncSession, id_name: str, caption: str, level_back: int):
@@ -110,8 +110,8 @@ async def def_empty_return(session: AsyncSession, id_name: str, caption: str, le
 
 
 # level=0
-async def def_main_menu_admin(session: AsyncSession, state: FSMContext, level: int):
-    await def_clear_question_message(state)
+async def def_main_menu_admin(session: AsyncSession, bot: Bot, state: FSMContext, level: int):
+    await def_clear_question_message(bot, state)
     await state.update_data({'get_message': ''})
     result = await orm_get_general(session, 'main')
     image = InputMediaPhoto(media=result.picture, caption='Основное меню администратора')
@@ -141,17 +141,19 @@ async def def_type_catalog(session: AsyncSession, state: FSMContext, cat_name: s
     await state.update_data({'get_message': f'type_catalog'})
     await state.update_data({'cat_name': cat_name})
 
-    types = await orm_get_prod_cat_types(session, cat_name)
-    await state.update_data({'id_cat_type': types[0].id})
+    types_category = await orm_get_prod_cat_types(session, cat_name)
+    await state.update_data({'id_cat_type': types_category[0].id})
 
-    if types[0].type_name == '':
-        products = await orm_get_products(session, cat_id=types[0].id, frozen=False)
+    if types_category[0].type_name == '':
+        products = await orm_get_products(session, cat_id=types_category[0].id, frozen=False)
         if len(products) != 0:
-            return await def_products(session, state, 3, types[0].id, 1)
+            return await def_products(session, state, 3, types_category[0].id, 1)
 
     result = await orm_get_general(session, 'catalog')
-    image = InputMediaPhoto(media=result.picture, caption='Выберите тип. \n\n*При необходимости введите новый тип*', parse_mode='Markdown')
-    reply_markup = get_admin_catalog_type_btns(level=2, menu_name=cat_name, categories=types)
+    image = InputMediaPhoto(media=result.picture,
+                            caption='Выберите тип. \n\n*При необходимости введите новый тип*',
+                            parse_mode='Markdown')
+    reply_markup = get_admin_catalog_type_btns(level=2, menu_name=cat_name, categories=types_category)
     return image, reply_markup
 
 
@@ -217,7 +219,7 @@ async def def_delete_product(session: AsyncSession, state: FSMContext, product_i
 
 # *******************************************************************************************
 # level=10
-async def def_information(session: AsyncSession, state: FSMContext, level: int):
+async def def_information(session: AsyncSession, level: int):
     result = await orm_get_general(session, 'information')
     image = InputMediaPhoto(media=result.picture, caption='Основные настройки')
     reply_markup = get_admin_information_btns(level=level)
@@ -318,17 +320,13 @@ async def def_general(session: AsyncSession, state: FSMContext, level: int, page
 
 # level=20
 # ********************************************************************************************
-async def def_questions_byers(session: AsyncSession, state: FSMContext, level: int):
-    await def_clear_question_message(state)
-    result = await orm_get_general(session, 'question')
-    image = InputMediaPhoto(media=result.picture, caption='Работа с вопросами покупателей')
-    reply_markup = get_admin_questions_byers_btns(level=level)
-    return image, reply_markup
+async def def_questions_byers(session: AsyncSession, bot: Bot, state: FSMContext, level: int):
+    return await def_questions_byers_admin(session, bot, state, level)
 
 
 # ***********************************************************************************************
 # level=30
-async def def_delete_photo_product(session: AsyncSession, state: FSMContext, level: int, page: int):
+async def def_delete_photo_product(session: AsyncSession, state: FSMContext, page: int):
     # удаление фото
     data_state = await state.get_data()
     product_pictures = data_state['product_pictures']
@@ -339,43 +337,48 @@ async def def_delete_photo_product(session: AsyncSession, state: FSMContext, lev
         page = 1
     return await def_choice_product_photo(session, state, 33, page)
 
+
 # level=31
-async def def_copy_product(session: AsyncSession, state: FSMContext, level: int, product_id: int):
+async def def_copy_product(session: AsyncSession, state: FSMContext, product_id: int):
     # копирование товара
-    return await def_edit_product(session, state, 32, product_id, True)
+    return await def_edit_product(session, state, product_id, True)
 
 
 # level=32
-async def def_edit_product(session: AsyncSession, state: FSMContext, level: int, product_id: int, copy: bool = False):
+async def def_edit_product(session: AsyncSession, state: FSMContext, product_id: int, copy: bool = False):
     await state.update_data({'get_message': f'product_name'})
-
-    product = await orm_get_product_id(session, product_id)
-    await state.update_data({'product_name': product.name})
-    await state.update_data({'product_price': product.price})
-    await state.update_data({'product_color': product.color})
-    await state.update_data({'product_size': product.size})
-    await state.update_data({'product_gender': product.gender})
-    await state.update_data({'product_composition': product.composition})
-    await state.update_data({'product_description': product.description})
-    await state.update_data({'product_link': product.link})
-
-    product_pictures = []
-    pictures = await orm_get_product_pictures(session, product_id)
-    for picture in pictures:
-        product_pictures.append(picture.picture)
-    await state.update_data({'product_pictures': product_pictures})
-
-    await state.update_data({'product_id_current': product_id})
-    if copy:
-        await state.update_data({'product_id': 0})
-    else:
-        await state.update_data({'product_id': product_id})
 
     data_state = await state.get_data()
     cat_name = data_state['cat_name']
 
-    caption = (f"Категория: *{cat_name}.*\n\n"
-               f"Текущее наименование: *{product.name}*.\n\n*Напишите новое наименование продукта.*")
+    if product_id == 0:
+        # это возврат из фото level=33, по кнопке "назад"
+        caption = f"Нет товаров в категории {cat_name}.\n\n*Введите наименование товара.*"
+    else:
+        product = await orm_get_product_id(session, product_id)
+        await state.update_data({'product_name': product.name})
+        await state.update_data({'product_price': product.price})
+        await state.update_data({'product_color': product.color})
+        await state.update_data({'product_size': product.size})
+        await state.update_data({'product_gender': product.gender})
+        await state.update_data({'product_composition': product.composition})
+        await state.update_data({'product_description': product.description})
+        await state.update_data({'product_link': product.link})
+
+        product_pictures = []
+        pictures = await orm_get_product_pictures(session, product_id)
+        for picture in pictures:
+            product_pictures.append(picture.picture)
+        await state.update_data({'product_pictures': product_pictures})
+
+        await state.update_data({'product_id_current': product_id})
+        if copy:
+            await state.update_data({'product_id': 0})
+        else:
+            await state.update_data({'product_id': product_id})
+
+        caption = (f"Категория: *{cat_name}.*\n\n"
+                   f"Текущее наименование: *{product.name}*.\n\n*Напишите новое наименование продукта.*")
     result = await orm_get_general(session, 'catalog')
     image = InputMediaPhoto(media=result.picture, caption=caption, parse_mode='Markdown')
     reply_markup = get_start_edit_product_btns(level=33, id_cat_type=data_state['id_cat_type'])
@@ -396,19 +399,25 @@ async def def_choice_product_photo(session: AsyncSession, state: FSMContext, lev
         pagination_btns = {}
         caption = (f"Категория: *{data_state['cat_name']}.*\n"
                    f"Наименование: *{data_state['product_name']}*.\n\n*Фото отсутствуют!\nВставьте фото товара.*")
+        btn_delete = False
     else:
         paginator = Paginator(product_pictures, page=page)
         picture = paginator.get_page()[0]
         pagination_btns = def_pages(paginator)
         caption = (f"Категория: *{data_state['cat_name']}.*\n"
                    f"Наименование: *{data_state['product_name']}*.\n\n*Вставьте дополнительные фото товара.*")
-
+        btn_delete = True
     # запоминаю для возврата в предыдущее окно
     data_state = await state.get_data()
     product_id = data_state['product_id_current']
 
     image = InputMediaPhoto(media=picture, caption=caption, parse_mode='Markdown')
-    reply_markup = get_admin_product_photos_btns(level=level, pagination_btns=pagination_btns, page=page, product_id=product_id)
+    reply_markup = get_admin_product_photos_btns(level=level,
+                                                 pagination_btns=pagination_btns,
+                                                 page=page,
+                                                 product_id=product_id,
+                                                 btn_delete=btn_delete
+                                                 )
     return image, reply_markup
 
 
@@ -658,7 +667,7 @@ async def def_choice_product_link(state: FSMContext, level: int):
 
 
 # level=41
-async def def_choice_product_end(session: AsyncSession, state: FSMContext):
+async def def_choice_product_end(bot: Bot, session: AsyncSession, state: FSMContext):
     # сохраняю весь товар
     await state.update_data({'get_message': f''})
 
@@ -691,6 +700,9 @@ async def def_choice_product_end(session: AsyncSession, state: FSMContext):
                                        composition=data_state['product_composition'],
                                        description=data_state['product_description'],
                                        link=data_state['product_link'])
+
+    id_cat_type = data_state['id_cat_type']
+    await def_clear_question_message(bot, state)
     # проверяю фото к товару
     pictures = await orm_get_product_pictures(session, product_id)
     for picture in pictures:
@@ -705,7 +717,4 @@ async def def_choice_product_end(session: AsyncSession, state: FSMContext):
     # сохраняю измененные фото к товару
     for picture in product_pictures:
         await orm_add_product_picture(session, product_id, picture)
-    return await def_products(session, state, 3, int(data_state['id_cat_type']), -1)
-
-
-
+    return await def_products(session, state, 3, id_cat_type, -1)

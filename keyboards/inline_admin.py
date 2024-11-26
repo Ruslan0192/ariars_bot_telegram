@@ -175,39 +175,43 @@ def get_admin_product_photos_btns(
         page: int | None = None,
         pagination_btns: dict | None = None,
         product_id: int,
-        sizes: tuple[int] = (1, 1, 2)
+        btn_delete: bool,
+        sizes: tuple[int] = (2, )
 ):
     keyboard = InlineKeyboardBuilder()
-    if pagination_btns != {}:
-        if len(pagination_btns.items()) % 2 == 0:
-            sizes = (2, 1, 1, 2)
+    if btn_delete:
+        if pagination_btns != {}:
+            if len(pagination_btns.items()) % 2 == 0:
+                sizes = (2, 1, 1, 2)
+            else:
+                sizes = (1, 1, 1, 2)
+
+            for text, control in pagination_btns.items():
+                if control == "next":
+                    keyboard.add(InlineKeyboardButton(text=text,
+                                                      callback_data=MenuCallBack(
+                                                          level=level,
+                                                          menu_name=control,
+                                                          page=page + 1).pack()))
+
+                elif control == "previous":
+                    keyboard.add(InlineKeyboardButton(text=text,
+                                                      callback_data=MenuCallBack(
+                                                          level=level,
+                                                          menu_name=control,
+                                                          page=page - 1).pack()))
         else:
-            sizes = (1, 1, 1, 2)
+            sizes = (1, 1, 2,)
+        keyboard.add(InlineKeyboardButton(text='Удалить',
+                                          callback_data=MenuCallBack(level=30,
+                                                                     menu_name='Delete',
+                                                                     page=page-1).pack()))
+        keyboard.add(InlineKeyboardButton(text='Дальше',
+                                          callback_data=MenuCallBack(level=level+1,
+                                                                     menu_name='catalog').pack()))
 
-        for text, control in pagination_btns.items():
-            if control == "next":
-                keyboard.add(InlineKeyboardButton(text=text,
-                                                  callback_data=MenuCallBack(
-                                                      level=level,
-                                                      menu_name=control,
-                                                      page=page + 1).pack()))
-
-            elif control == "previous":
-                keyboard.add(InlineKeyboardButton(text=text,
-                                                  callback_data=MenuCallBack(
-                                                      level=level,
-                                                      menu_name=control,
-                                                      page=page - 1).pack()))
-
-    keyboard.add(InlineKeyboardButton(text='Удалить',
-                                      callback_data=MenuCallBack(level=30,
-                                                                 menu_name='Delete',
-                                                                 page=page-1).pack()))
-    keyboard.add(InlineKeyboardButton(text='Дальше',
-                                      callback_data=MenuCallBack(level=level+1,
-                                                                 menu_name='catalog').pack()))
     keyboard.add(InlineKeyboardButton(text='Назад',
-                                      callback_data=MenuCallBack(level=level-1,
+                                      callback_data=MenuCallBack(level=32,
                                                                  menu_name='catalog', product_id=product_id).pack()))
     keyboard.add(InlineKeyboardButton(text='На главную 🏠',
                                       callback_data=MenuCallBack(level=0, menu_name='main').pack()))
@@ -391,6 +395,8 @@ def get_admin_questions_byers_btns(*, level: int, sizes: tuple[int] = (1, )):
 def get_admin_question_from_user_btns(*, question_id: int, sizes: tuple[int] = (2,)):
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(text='Посмотреть',
-                                      callback_data=MenuCallBack(level=23, menu_name='questionuser', product_id=question_id).pack()))
+                                      callback_data=MenuCallBack(level=23,
+                                                                 menu_name='questionuser',
+                                                                 product_id=question_id).pack()))
     return keyboard.adjust(*sizes).as_markup()
 

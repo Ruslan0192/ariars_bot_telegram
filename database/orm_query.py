@@ -264,19 +264,25 @@ async def orm_add_admin(session: AsyncSession,
     session.add(obj)
     await session.commit()
 
+
 async def orm_get_admins_work(session: AsyncSession):
     query = select(Admin).where(Admin.user == False)
     result = await session.execute(query)
     return result.scalars().all()
+
+
 async def orm_change_admin_user(session: AsyncSession, telegram_id: int):
     query = update(Admin).where(Admin.telegram_id == telegram_id).values(user=True)
     await session.execute(query)
     await session.commit()
 
+
 async def orm_get_admins_no_work(session: AsyncSession):
     query = select(Admin).where(Admin.user == True)
     result = await session.execute(query)
     return result.scalars().all()
+
+
 async def orm_change_user_admin(session: AsyncSession, telegram_id: int):
     query = update(Admin).where(Admin.telegram_id == telegram_id).values(user=False)
     await session.execute(query)
